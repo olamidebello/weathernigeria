@@ -59,3 +59,22 @@ ansible-playbook -i deploy/inventory.ini deploy/site.yml --syntax-check
 ```
 
 The CI workflow runs these checks on pushes and pull requests. Automated server deployment is invoked through Ansible, not through stored GitHub SSH secrets.
+
+## Automatic DNS provisioning (Cloudflare)
+
+Use this only if **africandroid.world is authoritatively hosted on Cloudflare**. Hosting a website on the server does not itself grant control of public DNS. The default deployment remains `dns_provider=manual` for other DNS providers.
+
+Create a Cloudflare API token scoped to `africandroid.world` with **Zone / DNS / Edit**. Obtain that zone's ID from Cloudflare. Supply credentials in the control machine's environment, never command-line arguments or Git. Run these commands in your server terminal:
+
+```bash
+cd /opt/weathernigeria-source
+git pull --ff-only origin main
+read -rp 'Cloudflare Zone ID: ' CLOUDFLARE_ZONE_ID
+read -rsp 'Cloudflare API token: ' CLOUDFLARE_API_TOKEN; echo
+export CLOUDFLARE_ZONE_ID CLOUDFLARE_API_TOKEN
+ansible-playbook -i deploy/local.ini deploy/site.yml \
+  -e dns_provider=cloudflare -e tls_email=dobcalldemo@gmail.com
+unset CLOUDFLARE_API_TOKEN CLOUDFLARE_ZONE_ID
+```
+
+DNS-only invocation: `ansible-playbook -i deploy/local.ini deploy/dns.yml` with the same exported credentials. The integrated deployment creates/updates only the exact hostname A record, disables Cloudflare proxying for direct certificate validation, waits for Google and Cloudflare public resolvers, then requests HTTPS. Credentials are hidden from task output. Existing CNAME, NS, AAAA or multiple A records cause an explicit failure rather than deleting records. Change `dns_ipv4` if the server IP changes. Negative DNS caches may require waiting longer and rerunning. This cannot change registrar nameserver delegation or configure other DNS providers.
