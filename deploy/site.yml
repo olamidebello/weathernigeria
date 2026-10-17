@@ -1,0 +1,118 @@
+---
+- name: Deploy WeatherNigeria
+  hosts: weather
+  become: true
+  vars:
+    domain: weathernigeria.africandroid.world
+    install_dir: /opt/weathernigeria
+    tls_email: ''
+    enable_tls: true
+  tasks:
+    - name: Validate deployment settings
+      ansible.builtin.assert:
+        that:
+          - domain is match('^[a-z0-9][a-z0-9.-]+[a-z0-9]$')
+          - not enable_tls or tls_email | length > 3
+        fail_msg: Set tls_email to your certificate contact email or enable_tls=false for HTTP staging.
+    - name: Install operating system dependencies
+      ansible.builtin.apt:
+        name: [python3, nginx, certbot, python3-certbot-nginx, ca-certificates]
+        update_cache: true
+        state: present
+    - name: Create service account
+      ansible.builtin.user:
+        name: weathernigeria
+        system: true
+        shell: /usr/sbin/nologin
+        create_home: false
+    - name: Create application directory
+      ansible.builtin.file:
+        path: '{{ install_dir }}'
+        state: directory
+        mode: '0755'
+    - name: Install application
+      ansible.builtin.copy:
+        src: '{{ item }}'
+        dest: '{{ install_dir }}/'
+        owner: root
+        group: root
+        mode: preserve
+      loop: ['../server.py', '../static']
+      notify: Restart weather
+    - name: Install service
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/weathernigeria.service
+        mode: '0644'
+        content: |
+          [Unit]
+          Description=WeatherNigeria gateway
+          After=network-online.target
+          Wants=network-online.target
+          [Service]
+          User=weathernigeria
+          WorkingDirectory={{ install_dir }}
+          ExecStart=/usr/bin/python3 {{ install_dir }}/server.py
+          Restart=on-failure
+          NoNewPrivileges=true
+          PrivateTmp=true
+          ProtectSystem=strict
+          ProtectHome=true
+          MemoryMax=256M
+          TasksMax=96
+          [Install]
+          WantedBy=multi-user.target
+      notify: Restart weather
+    - name: Enable backend service
+      ansible.builtin.systemd:
+        name: weathernigeria
+        enabled: true
+        state: started
+        daemon_reload: true
+    - name: Check existing TLS certificate
+      ansible.builtin.stat:
+        path: /etc/letsencrypt/live/{{ domain }}/fullchain.pem
+      register: tls_certificate
+    - name: Install nginx configuration
+      ansible.builtin.template:
+        src: nginx.conf.j2
+        dest: /etc/nginx/sites-available/weathernigeria
+        mode: '0644'
+      notify: Reload nginx
+    - name: Enable virtual host
+      ansible.builtin.file:
+        src: /etc/nginx/sites-available/weathernigeria
+        dest: /etc/nginx/sites-enabled/weathernigeria
+        state: link
+      notify: Reload nginx
+    - name: Enable nginx
+      ansible.builtin.service:
+        name: nginx
+        state: started
+        enabled: true
+    - name: Apply service changes
+      ansible.builtin.meta: flush_handlers
+    - name: Validate local health
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8080/api/health
+        status_code: 200
+    - name: Obtain or renew TLS certificate
+      ansible.builtin.command:
+        argv: [certbot, --nginx, --non-interactive, --agree-tos, --redirect, --keep-until-expiring, --email, '{{ tls_email }}', -d, '{{ domain }}']
+      when: enable_tls
+      register: certificate
+      changed_when: "'Congratulations' in certificate.stdout or 'Deploying certificate' in certificate.stdout"
+    - name: Enable certificate renewal
+      ansible.builtin.systemd:
+        name: certbot.timer
+        state: started
+        enabled: true
+      when: enable_tls
+  handlers:
+    - name: Restart weather
+      ansible.builtin.systemd:
+        name: weathernigeria
+        state: restarted
+        daemon_reload: true
+    - name: Reload nginx
+      ansible.builtin.shell: nginx -t && systemctl reload nginx
+      changed_when: true

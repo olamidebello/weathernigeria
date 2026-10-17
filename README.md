@@ -27,12 +27,12 @@ Open http://127.0.0.1:8080. External connectivity is needed for Open-Meteo, Leaf
 Requires Debian 12 or Ubuntu 22.04/24.04, SSH key access with root/sudo, and Ansible on your control computer. The playbook installs the platform from this checkout; there is no compilation step.
 
 1. Create an A record for `weathernigeria.africandroid.world` pointing to the server IPv4 address. Only create AAAA if IPv6 is configured. Allow inbound TCP 80/443. Keep backend port 8080 private.
-2. Edit `deploy/inventory.ini` for your server and SSH user, or use the explicit inventory below.
+2. Edit `deploy/inventory.ini` for your server and SSH user, and set `ansible_host=YOUR_SERVER_IP` if DNS is not ready.
 3. Run from the repository root:
 
 ```sh
 python3 -m pip install ansible-core
-ansible-playbook -i 'YOUR_SERVER_IP,' -u root deploy/site.yml -e tls_email=YOUR_EMAIL
+ansible-playbook -i deploy/inventory.ini deploy/site.yml -e tls_email=YOUR_EMAIL
 ```
 
 For HTTP-only staging add `-e '{"enable_tls": false}'`. For sudo access add `--become` and use your SSH account. Do not store credentials in the repository. The playbook preserves other Nginx sites and validates configuration before reload. Repeat the same command to deploy updates. Before update, retain the prior checkout for rollback; rerun its playbook to restore the application.
