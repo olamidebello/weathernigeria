@@ -1,0 +1,41 @@
+---
+- name: Build WeatherNigeria Android development APK
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    source_dir: "{{ playbook_dir }}/../mobile"
+    output_dir: "{{ playbook_dir }}/../dist"
+    android_sdk: "{{ lookup('env', 'ANDROID_HOME') }}"
+  tasks:
+    - name: Require Android build environment
+      ansible.builtin.assert:
+        that:
+          - android_sdk | length > 0
+        fail_msg: "Set ANDROID_HOME to an Android SDK with platform 35 and build-tools 35.0.0. The mobile GitHub workflow provisions these automatically."
+    - name: Build APK
+      ansible.builtin.command:
+        argv: [gradle, --no-daemon, --console=plain, assembleDebug]
+        chdir: "{{ source_dir }}"
+      environment:
+        ANDROID_HOME: "{{ android_sdk }}"
+      changed_when: true
+    - name: Create output directory
+      ansible.builtin.file:
+        path: "{{ output_dir }}"
+        state: directory
+        mode: '0755'
+    - name: Copy successful build
+      ansible.builtin.copy:
+        src: "{{ source_dir }}/app/build/outputs/apk/debug/app-debug.apk"
+        dest: "{{ output_dir }}/WeatherNigeria.apk"
+        mode: '0644'
+    - name: Check APK signature and contents
+      ansible.builtin.command:
+        argv: ["{{ android_sdk }}/build-tools/35.0.0/apksigner", verify, --verbose, "{{ output_dir }}/WeatherNigeria.apk"]
+      changed_when: false
+    - name: Write download checksum
+      ansible.builtin.shell:
+        cmd: sha256sum WeatherNigeria.apk > WeatherNigeria.apk.sha256
+        chdir: "{{ output_dir }}"
+      changed_when: true

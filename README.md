@@ -78,3 +78,17 @@ unset CLOUDFLARE_API_TOKEN CLOUDFLARE_ZONE_ID
 ```
 
 DNS-only invocation: `ansible-playbook -i deploy/local.ini deploy/dns.yml` with the same exported credentials. The integrated deployment creates/updates only the exact hostname A record, disables Cloudflare proxying for direct certificate validation, waits for Google and Cloudflare public resolvers, then requests HTTPS. Credentials are hidden from task output. Existing CNAME, NS, AAAA or multiple A records cause an explicit failure rather than deleting records. Change `dns_ipv4` if the server IP changes. Negative DNS caches may require waiting longer and rerunning. This cannot change registrar nameserver delegation or configure other DNS providers.
+
+## Android app and automatic builds
+
+The native Android WebView app loads the live HTTPS site. It needs internet; city search is supported, native geolocation is not yet implemented. This is a debug-signed development APK, not a store release.
+
+Pushes to mobile source on main and manual runs of **Build Android app** provision Java 17, Gradle 8.9 and Android SDK 35, then invoke `ansible-playbook deploy/mobile.yml`. A verified APK and SHA-256 checksum are published to GitHub Releases. The website's Android app page discovers the latest successful release and only displays a download button when an APK exists. Redeploy the website with the existing site playbook to install that page.
+
+To build locally, install Java 17, Gradle 8.9 and Android SDK platform 35/build-tools 35.0.0, set ANDROID_HOME, install ansible-core and run:
+
+```sh
+ansible-playbook deploy/mobile.yml
+```
+
+Outputs: dist/WeatherNigeria.apk and dist/WeatherNigeria.apk.sha256. GitHub-hosted builds do not preserve the debug signing key across runs; reinstall may be required. Use a securely managed persistent release signing key before public production distribution. No iOS binary is built.
