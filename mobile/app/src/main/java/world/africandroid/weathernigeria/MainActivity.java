@@ -6,7 +6,7 @@ import android.content.Intent;
 import android.net.Uri;
 public class MainActivity extends Activity {
     private WebView web;
-    private static final String HOST = "weathernigeria.africandroid.world";
+    private static final String HOST = BuildConfig.WEATHER_HOST;
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         web = new WebView(this);

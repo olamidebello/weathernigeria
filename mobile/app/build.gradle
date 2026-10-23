@@ -2,8 +2,10 @@ plugins { id 'com.android.application' }
 android {
     namespace 'world.africandroid.weathernigeria'
     compileSdk 35
+    buildFeatures { buildConfig true }
     defaultConfig {
-        applicationId 'world.africandroid.weathernigeria'
+        applicationId 'world.africandroid.weather.' + (System.getenv('WEATHER_SLUG') ?: 'nigeria')
+        buildConfigField 'String', 'WEATHER_HOST', '"' + (System.getenv('WEATHER_HOST') ?: 'weathernigeria.africandroid.world') + '"'
         minSdk 23
         targetSdk 35
         versionCode Integer.parseInt(System.getenv('APP_VERSION_CODE') ?: '1')

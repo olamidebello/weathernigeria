@@ -1,0 +1,190 @@
+---
+- name: Deploy all African weather editions on Olamidepanel host
+  hosts: all
+  become: true
+  vars:
+    africa_source: /opt/africaweather-source
+    africa_assets: /opt/africaweather/assets
+    africa_port: 18766
+    africa_tls_cert: /etc/letsencrypt/live/africandroid.world/fullchain.pem
+    africa_tls_key: /etc/letsencrypt/live/africandroid.world/privkey.pem
+    africa_enable_tls: false
+  tasks:
+    - name: Install dependencies
+      ansible.builtin.apt:
+        name: [python3, git, nginx, ansible-core, ca-certificates, openssl]
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+    - name: Clone and pull country edition source
+      ansible.builtin.git:
+        repo: https://github.com/olamidebello/weathernigeria.git
+        dest: '{{ africa_source }}'
+        version: main
+        force: false
+    - name: Test application before deployment
+      ansible.builtin.command:
+        argv: [python3, -m, unittest, discover, -s, tests]
+        chdir: '{{ africa_source }}'
+      changed_when: false
+    - name: Read country manifest
+      ansible.builtin.slurp:
+        src: '{{ africa_source }}/africa/countries.json'
+      register: manifest
+    - name: Set editions
+      ansible.builtin.set_fact:
+        editions: '{{ manifest.content | b64decode | from_json }}'
+    - name: Validate wildcard certificate for every requested hostname
+      ansible.builtin.command:
+        argv: [openssl, x509, -in, '{{ africa_tls_cert }}', -noout, -checkend, '604800', -checkhost, '{{ item }}']
+      loop: "{{ (editions | map(attribute='domain') | list) + ['africaweather.africandroid.world'] }}"
+      changed_when: false
+      when: africa_enable_tls | bool
+    - name: Create unprivileged gateway account
+      ansible.builtin.user:
+        name: africaweather
+        system: true
+        shell: /usr/sbin/nologin
+        create_home: false
+    - name: Create asset directory
+      ansible.builtin.file:
+        path: '{{ africa_assets }}'
+        state: directory
+        mode: '0755'
+    - name: Build 55 country editions and continental directory
+      ansible.builtin.command:
+        argv: [python3, '{{ africa_source }}/scripts/build_africa.py', '{{ africa_assets }}']
+      changed_when: true
+    - name: Install country gateway service
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/africaweather.service
+        mode: '0644'
+        content: |
+          [Unit]
+          Description=AfricaWeather country editions
+          After=network-online.target
+          [Service]
+          User=africaweather
+          WorkingDirectory={{ africa_source }}
+          Environment=PORT={{ africa_port }}
+          Environment=WEATHER_ASSETS={{ africa_assets }}
+          ExecStart=/usr/bin/python3 {{ africa_source }}/africa/server.py
+          Restart=on-failure
+          NoNewPrivileges=true
+          ProtectSystem=strict
+          ProtectHome=true
+          PrivateTmp=true
+          MemoryMax=512M
+          TasksMax=128
+          [Install]
+          WantedBy=multi-user.target
+    - name: Start updated gateway
+      ansible.builtin.systemd:
+        name: africaweather
+        daemon_reload: true
+        enabled: true
+        state: restarted
+    - name: Verify every host through backend
+      ansible.builtin.uri:
+        url: 'http://127.0.0.1:{{ africa_port }}/api/health'
+        headers:
+          Host: '{{ item }}'
+      loop: "{{ (editions | map(attribute='domain') | list) + ['africaweather.africandroid.world'] }}"
+      register: health
+      retries: 10
+      delay: 2
+      until: health.status == 200
+    - name: Size Nginx host-name hash for country editions
+      ansible.builtin.lineinfile:
+        path: /etc/nginx/nginx.conf
+        regexp: '^\s*#?\s*{{ item.key }}\s+'
+        line: '    {{ item.key }} {{ item.value }};'
+        insertafter: '^http\s*\{'
+      loop:
+        - {key: server_names_hash_bucket_size, value: 128}
+        - {key: server_names_hash_max_size, value: 4096}
+    - name: Install weather virtual hosts
+      ansible.builtin.copy:
+        dest: /etc/nginx/sites-available/africaweather
+        mode: '0644'
+        content: |
+          server {
+            listen 80;
+            server_name {{ editions | map(attribute='domain') | join(' ') }} africaweather.africandroid.world;
+          {% if africa_enable_tls | bool %}
+            return 301 https://$host$request_uri;
+          }
+          server {
+            listen 443 ssl;
+            server_name {{ editions | map(attribute='domain') | join(' ') }} africaweather.africandroid.world;
+            ssl_certificate {{ africa_tls_cert }};
+            ssl_certificate_key {{ africa_tls_key }};
+            ssl_protocols TLSv1.2 TLSv1.3;
+          {% endif %}
+            location / {
+              proxy_pass http://127.0.0.1:{{ africa_port }};
+              proxy_set_header Host $host;
+              proxy_read_timeout 30s;
+            }
+          }
+    - name: Remove superseded standalone Nigeria virtual host symlink
+      ansible.builtin.file:
+        path: /etc/nginx/sites-enabled/weathernigeria
+        state: absent
+    - name: Stop standalone updater from restoring old Nigeria host
+      ansible.builtin.command: systemctl disable --now weathernigeria-deploy.timer
+      register: old_timer
+      failed_when: old_timer.rc != 0 and 'does not exist' not in old_timer.stderr and 'not loaded' not in old_timer.stderr
+      changed_when: old_timer.rc == 0
+    - name: Enable continental virtual host
+      ansible.builtin.file:
+        src: /etc/nginx/sites-available/africaweather
+        dest: /etc/nginx/sites-enabled/africaweather
+        state: link
+    - name: Validate Nginx
+      ansible.builtin.command: nginx -t
+      changed_when: false
+    - name: Reload gateway
+      ansible.builtin.service:
+        name: nginx
+        enabled: true
+        state: reloaded
+    - name: Persist deployment options
+      ansible.builtin.copy:
+        dest: /etc/africaweather-deploy.json
+        mode: '0600'
+        content: "{{ {'africa_enable_tls': africa_enable_tls | bool, 'africa_tls_cert': africa_tls_cert, 'africa_tls_key': africa_tls_key, 'africa_port': africa_port, 'africa_source': africa_source, 'africa_assets': africa_assets} | to_nice_json }}"
+    - name: Install automatic pull service
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/africaweather-deploy.service
+        mode: '0644'
+        content: |
+          [Unit]
+          Description=Pull and deploy African weather editions
+          After=network-online.target
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/bin/ansible-pull -U https://github.com/olamidebello/weathernigeria.git -C main -d /opt/africaweather-bootstrap -i localhost, -c local deploy/africaweather.yml -e @/etc/africaweather-deploy.json
+          TimeoutStartSec=1800
+    - name: Install deployment timer
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/africaweather-deploy.timer
+        mode: '0644'
+        content: |
+          [Unit]
+          Description=Update African weather editions every 30 minutes
+          [Timer]
+          OnBootSec=10min
+          OnUnitInactiveSec=30min
+          RandomizedDelaySec=120
+          [Install]
+          WantedBy=timers.target
+    - name: Enable deployment timer
+      ansible.builtin.systemd:
+        name: africaweather-deploy.timer
+        daemon_reload: true
+        enabled: true
+        state: started
+    - name: Report DNS and HTTPS prerequisites
+      ansible.builtin.debug:
+        msg: '55 country editions plus AfricaWeather installed. Point wildcard *.africandroid.world or each requested A record to 154.16.170.86. HTTPS enabled={{ africa_enable_tls }}. Enable TLS using a valid wildcard certificate. Existing unrelated Olamidepanel sites are retained.'
