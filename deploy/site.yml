@@ -5,10 +5,11 @@
   vars:
     domain: weathernigeria.africandroid.world
     install_dir: /opt/weathernigeria
+    backend_port: 18765
     tls_email: ''
     enable_tls: true
     dns_provider: manual
-    dns_ipv4: 181.214.149.146
+    dns_ipv4: 154.16.170.86
     dns_zone_id: "{{ lookup('env', 'CLOUDFLARE_ZONE_ID') }}"
     dns_api_token: "{{ lookup('env', 'CLOUDFLARE_API_TOKEN') }}"
   tasks:
@@ -55,6 +56,7 @@
           [Service]
           User=weathernigeria
           WorkingDirectory={{ install_dir }}
+          Environment=PORT={{ backend_port }}
           ExecStart=/usr/bin/python3 {{ install_dir }}/server.py
           Restart=on-failure
           NoNewPrivileges=true
@@ -97,8 +99,12 @@
       ansible.builtin.meta: flush_handlers
     - name: Validate local health
       ansible.builtin.uri:
-        url: http://127.0.0.1:8080/api/health
+        url: http://127.0.0.1:{{ backend_port }}/api/health
         status_code: 200
+      register: backend_health
+      retries: 10
+      delay: 2
+      until: backend_health.status == 200
     - name: Provision public DNS before certificate issuance
       ansible.builtin.include_tasks: dns-tasks.yml
       when: dns_provider != 'manual'

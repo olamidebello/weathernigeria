@@ -1,0 +1,83 @@
+---
+- name: Configure WeatherNigeria automatic deployment
+  hosts: all
+  become: true
+  vars:
+    weather_source: /opt/weathernigeria-source
+    weather_repo: https://github.com/olamidebello/weathernigeria.git
+    weather_branch: main
+    weather_enable_tls: false
+    weather_backend_port: 18765
+    weather_tls_email: dobcalldemo@gmail.com
+  tasks:
+    - name: Install deployment dependencies
+      ansible.builtin.apt:
+        name: [git, ansible-core, python3, ca-certificates, util-linux]
+        update_cache: true
+        cache_valid_time: 3600
+    - name: Pull application and deployment source
+      ansible.builtin.git:
+        repo: "{{ weather_repo }}"
+        dest: "{{ weather_source }}"
+        version: "{{ weather_branch }}"
+        force: false
+    - name: Create deployment settings directory
+      ansible.builtin.file:
+        path: /etc/weathernigeria
+        state: directory
+        mode: '0755'
+    - name: Persist deployment settings
+      ansible.builtin.copy:
+        dest: /etc/weathernigeria/deploy.json
+        mode: '0600'
+        content: "{{ {'enable_tls': weather_enable_tls | bool, 'backend_port': weather_backend_port | int, 'tls_email': weather_tls_email, 'dns_ipv4': '154.16.170.86'} | to_nice_json }}"
+    - name: Install update command
+      ansible.builtin.copy:
+        dest: /usr/local/sbin/weathernigeria-deploy
+        mode: '0755'
+        content: |
+          #!/bin/bash
+          set -euo pipefail
+          exec 9>/run/lock/weathernigeria-deploy.lock
+          flock -n 9 || exit 0
+          cd {{ weather_source | quote }}
+          git fetch origin {{ weather_branch | quote }}
+          git merge --ff-only {{ ('origin/' + weather_branch) | quote }}
+          python3 -m py_compile server.py
+          python3 -m unittest discover -s tests
+          ansible-playbook -i deploy/local.ini deploy/site.yml -e @/etc/weathernigeria/deploy.json
+    - name: Deploy and verify application now
+      ansible.builtin.command: /usr/local/sbin/weathernigeria-deploy
+      changed_when: true
+    - name: Install automatic deployment service
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/weathernigeria-deploy.service
+        mode: '0644'
+        content: |
+          [Unit]
+          Description=Pull, test and deploy WeatherNigeria
+          Wants=network-online.target
+          After=network-online.target
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/sbin/weathernigeria-deploy
+          TimeoutStartSec=1800
+    - name: Install automatic deployment timer
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/weathernigeria-deploy.timer
+        mode: '0644'
+        content: |
+          [Unit]
+          Description=Check WeatherNigeria updates every 15 minutes
+          [Timer]
+          OnBootSec=5min
+          OnUnitInactiveSec=15min
+          RandomizedDelaySec=60
+          [Install]
+          WantedBy=timers.target
+    - name: Enable automatic deployment
+      ansible.builtin.systemd:
+        name: weathernigeria-deploy.timer
+        daemon_reload: true
+        enabled: true
+        state: started
